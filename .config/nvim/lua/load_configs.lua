@@ -1,0 +1,6 @@
+require "configs.mason-lsp"
+require "configs.nvim-treesitter"
+require "configs.telescope"
+require "configs.cmp"
+require "configs.autopairs"
+require "configs.lsp"
