@@ -11,10 +11,12 @@ if not vim.loop.fs_stat(lazypath) then
 end
 vim.opt.rtp:prepend(lazypath)
 
+
 vim.loader.enable()
 
 require("basic_settings")
 require("load_plugins")
 require("load_configs")
+require("mappings")
 
 vim.cmd [[colorscheme tokyonight]]
