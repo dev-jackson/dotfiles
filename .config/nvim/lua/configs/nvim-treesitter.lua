@@ -1,11 +1,14 @@
-local ts = require'nvim-treesitter.configs'
+local ts = require 'nvim-treesitter.configs'
 ts.setup({
-	ensure_installed = {"lua",  "tsx",
+    ensure_installed = {
+        "lua",
+        "tsx",
         "typescript",
-        "javascript",},
-	sync_install = true,
-	auto_install = true,
-highlight = {
+        "javascript",
+    },
+    sync_install = true,
+    auto_install = true,
+    highlight = {
         enable = true,
         additional_vim_regex_highlighting = false,
     },
@@ -13,7 +16,7 @@ highlight = {
         enable = true,
         enable_autocmd = false,
     },
-     rainbow = {
+    rainbow = {
         enable = true,
         disable = { "html" },
         extended_mode = false,

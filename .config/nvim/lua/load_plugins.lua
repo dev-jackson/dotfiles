@@ -24,8 +24,10 @@ local plugins = {
     { 'hrsh7th/vim-vsnip' },
 
     { "windwp/nvim-autopairs" },
-    { "vim-airline/vim-airline" },
-
+    {
+        'nvim-lualine/lualine.nvim',
+        requires = { 'nvim-tree/nvim-web-devicons', opt = true }
+    },
     -- Files views
     {
         "nvim-neo-tree/neo-tree.nvim",
@@ -55,6 +57,9 @@ local plugins = {
             },
         }
     },
+    { 'akinsho/toggleterm.nvim', version = "*", config = true },
+    -- Gitsings
+    { "lewis6991/gitsigns.nvim" },
     -- Themes
     {
         "folke/tokyonight.nvim",
@@ -65,5 +70,4 @@ local plugins = {
 }
 
 
-require('lazy').setup(plugins, {
-})
+require('lazy').setup(plugins, {})

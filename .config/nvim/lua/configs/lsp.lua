@@ -38,4 +38,10 @@ nvim_lsp.tailwindcss.setup({
     capabilities = capabilities,
 })
 
+-- Emmet
+nvim_lsp.emmet_ls.setup({
+    on_attach = on_attach,
+    capabilities = capabilities,
+})
+
 vim.cmd [[autocmd BufWritePre * lua vim.lsp.buf.format()]]

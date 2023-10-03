@@ -1,4 +1,10 @@
-require("telescope").setup()
+require("telescope").setup({
+    defaults = {
+        file_ignore_patterns = {
+            "node_modules"
+        }
+    }
+})
 
 local opts = { noremap = true }
 local opts_desc = function(desc)
