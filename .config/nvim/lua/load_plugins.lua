@@ -1,7 +1,6 @@
 local plugins = {
     { "williamboman/mason.nvim" },
-    { "williamboman/mason-lspconfig.nvim"
-    },
+    { "williamboman/mason-lspconfig.nvim" },
     { "neovim/nvim-lspconfig" },
     { "neovim/nvim-lspconfig" },
 
@@ -22,12 +21,17 @@ local plugins = {
     { 'hrsh7th/nvim-cmp' },
     { 'hrsh7th/cmp-vsnip' },
     { 'hrsh7th/vim-vsnip' },
-
+    {
+        "L3MON4D3/LuaSnip",
+        version = "v2.*",
+        build = "make install_jsregexp"
+    },
     { "windwp/nvim-autopairs" },
     {
         'nvim-lualine/lualine.nvim',
         requires = { 'nvim-tree/nvim-web-devicons', opt = true }
     },
+    { 'numToStr/Comment.nvim', lazy = false },
     -- Files views
     {
         "nvim-neo-tree/neo-tree.nvim",
@@ -53,7 +57,7 @@ local plugins = {
                             },
                         },
                     })
-                end,
+                end
             },
         }
     },
@@ -66,7 +70,19 @@ local plugins = {
         lazy = false,
         priority = 1000,
         opts = {},
+    },
+    { "brenoprata10/nvim-highlight-colors" },
+    --
+    {
+        'akinsho/flutter-tools.nvim',
+        lazy = false,
+        dependencies = {
+            'nvim-lua/plenary.nvim',
+            'stevearc/dressing.nvim', -- optional for vim.ui.select
+        },
+        config = true,
     }
+
 }
 
 
