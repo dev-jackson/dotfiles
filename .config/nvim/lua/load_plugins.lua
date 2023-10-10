@@ -2,7 +2,6 @@ local plugins = {
     { "williamboman/mason.nvim" },
     { "williamboman/mason-lspconfig.nvim" },
     { "neovim/nvim-lspconfig" },
-    { "neovim/nvim-lspconfig" },
 
     -- Files
     {
@@ -10,8 +9,8 @@ local plugins = {
         branch = '0.1.x',
         dependencies = { 'nvim-lua/plenary.nvim' }
     },
-
-    { "nvim-treesitter/nvim-treesitter", build = ":TSUpdate" },
+    { "nvim-telescope/telescope-file-browser.nvim" },
+    { "nvim-treesitter/nvim-treesitter",           build = ":TSUpdate" },
 
     { 'neovim/nvim-lspconfig' },
     { 'hrsh7th/cmp-nvim-lsp' },
@@ -27,11 +26,12 @@ local plugins = {
         build = "make install_jsregexp"
     },
     { "windwp/nvim-autopairs" },
+    { "windwp/nvim-ts-autotag" },
     {
         'nvim-lualine/lualine.nvim',
         requires = { 'nvim-tree/nvim-web-devicons', opt = true }
     },
-    { 'numToStr/Comment.nvim', lazy = false },
+    { 'numToStr/Comment.nvim',   lazy = false },
     -- Files views
     {
         "nvim-neo-tree/neo-tree.nvim",
@@ -71,6 +71,7 @@ local plugins = {
         priority = 1000,
         opts = {},
     },
+    { "svrana/neosolarized.nvim" },
     { "brenoprata10/nvim-highlight-colors" },
     --
     {

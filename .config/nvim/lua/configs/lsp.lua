@@ -24,6 +24,7 @@ local capabilities = require("cmp_nvim_lsp").default_capabilities()
 nvim_lsp.tsserver.setup({
     on_attach = on_attach,
     filetypes = { "typescript", "typescriptreact", "typescript.tsx" },
+    cmd = { "typescript-language-server", "--stdio" },
     capabilities = capabilities,
 })
 
@@ -43,6 +44,20 @@ nvim_lsp.tailwindcss.setup({
 nvim_lsp.emmet_ls.setup({
     on_attach = on_attach,
     capabilities = capabilities,
+})
+
+nvim_lsp.lua_ls.setup({
+    on_attach = on_attach,
+    settings = {
+        Lua = {
+            diagnostics = {
+                globals = { 'vim' }
+            },
+            workspace = {
+                library = vim.api.nvim_get_runtime_file("", true)
+            }
+        }
+    }
 })
 
 vim.cmd [[autocmd BufWritePre * lua vim.lsp.buf.format()]]
