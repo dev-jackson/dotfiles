@@ -73,6 +73,11 @@ local plugins = {
     },
     { "svrana/neosolarized.nvim" },
     { "brenoprata10/nvim-highlight-colors" },
+    {
+        "catppuccin/nvim",
+        name = "catppuccin",
+        priority = 1000
+    },
     --
     {
         'akinsho/flutter-tools.nvim',

@@ -20,4 +20,4 @@ require("load_plugins")
 require("load_configs")
 require("mappings")
 
-vim.cmd [[colorscheme tokyonight]]
+vim.cmd [[colorscheme catppuccin-mocha]]

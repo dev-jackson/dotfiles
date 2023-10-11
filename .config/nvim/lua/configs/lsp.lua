@@ -60,4 +60,35 @@ nvim_lsp.lua_ls.setup({
     }
 })
 
+-- Eslint
+local eslint = {
+    lintCommand = "eslint_d -f unix --stdin --stdin-filename ${INPUT}",
+    lintIgnoreExitCode = true,
+    lintStdin = true,
+    lintFormats = { "%f:%l:%c: %m" },
+    formatCommand = "eslint_d --fix-to-stdout --stdin --stdin-filename=${INPUT}",
+    formatStdin = true
+}
+
+nvim_lsp.efm.setup({
+    init_options = { documentFormatting = true, codeAction = true },
+    settings = {
+        languages = {
+            javascript = { eslint },
+            javascriptreact = { eslint },
+            ["javascript.jsx"] = { eslint },
+            typescript = { eslint },
+            typescriptreact = { eslint }
+        }
+    },
+    filetypes = {
+        "javascript",
+        "javascriptreact",
+        "javascript.jsx",
+        "typescript",
+        "typescriptreact",
+        "typescript.tsx"
+    }
+})
+
 vim.cmd [[autocmd BufWritePre * lua vim.lsp.buf.format()]]
