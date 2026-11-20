@@ -28,6 +28,7 @@ Enabled via `tab_bar_style custom` in kitty.conf.
 import os
 import re
 import socket
+import time
 
 from kitty.fast_data_types import (
     Screen,
@@ -59,15 +60,17 @@ PALETTE = [
 ]
 
 DARK_FG = 0x1E1E2E     # Mocha base — text color on filled accent tabs
-DIM_BG = 0x181825      # Mocha mantle — background of inactive tabs
+# Inactive tabs have no fill of their own: they float on the bar as accent text,
+# so only the active tab reads as a solid "lit" segment (HUD look).
+DIM_BG = 0x11111B      # Mocha crust — same as BAR_BG on purpose
 BAR_BG = 0x11111B      # Mocha crust — tab_bar_background
-DIM_SEP = 0x313244     # Mocha surface0 — faint separator between two inactive tabs
+DIM_SEP = 0x45475A     # Mocha surface1 — faint slash between two inactive tabs
 ATTENTION = 0xF38BA8   # Mocha red — overrides accent when a tab needs attention
 NEW_FG = 0xA6ADC8      # Mocha subtext0 — the "+" button / overflow chip (~8:1 on BAR_BG)
 BTN_FG = 0x7F849C      # Mocha overlay1 — min/max buttons (5.1:1 on BAR_BG, AA text)
 
-SEP_HARD = ""  # solid powerline right-pointing triangle (around active tab)
-SEP_SOFT = ""  # thin right-pointing chevron (between two inactive tabs)
+SEP_HARD = "\ue0bc"  # solid slant: angled cut on both sides of the lit tab
+SEP_SOFT = "\ue0bd"  # thin slash between two unlit tabs
 
 # --- Icons (Nerd Font, codepoints verified against the installed font's
 # cmap -- see dev-* / md-* / seti-* glyph names in nerd-fonts) --------------
@@ -469,6 +472,96 @@ def _fill_glyph(os_window_id: int, is_active: bool) -> str:
     return BLOCKS[min(len(BLOCKS) - 1, int(t * len(BLOCKS)))]
 
 
+# --- HUD (right-hand status panel) ------------------------------------------
+#
+# "⎇ branch │ HH:MM" beside the window buttons, for the active tab. It is the
+# lowest-priority element of the bar: the planner drops it before it would
+# fold a single tab away. Cheap by construction:
+#   - branch: read straight from .git/HEAD (no `git` subprocess), cached per
+#     cwd for HUD_GIT_TTL, so animation frames never touch the disk;
+#   - clock: one non-repeating timer per minute boundary repaints the bar.
+#     The text only changes on that boundary, so the bar's width never moves
+#     mid-animation (the hard constraint from the Animation section).
+
+ICON_BRANCH = "\ue725"   # dev-git_branch
+HUD_SEP = "│"
+HUD_GIT_TTL = 2.0
+HUD_BRANCH_MAX = 18
+HUD_ICON_FG = 0xCBA6F7   # Mocha mauve — branch glyph
+HUD_TEXT_FG = 0xA6ADC8   # Mocha subtext0
+HUD_CLOCK_FG = 0xCDD6F4  # Mocha text
+
+_git_cache: dict[str, tuple[float, str]] = {}
+_clock_timer: int | None = None
+
+
+def _git_branch(cwd: str) -> str:
+    now = monotonic()
+    cached = _git_cache.get(cwd)
+    if cached is not None and now - cached[0] < HUD_GIT_TTL:
+        return cached[1]
+    branch = ""
+    d = cwd
+    try:
+        while d:
+            dot_git = os.path.join(d, ".git")
+            if os.path.isdir(dot_git):
+                head_path = os.path.join(dot_git, "HEAD")
+            elif os.path.isfile(dot_git):
+                # worktree / submodule: ".git" is a file pointing at the gitdir
+                with open(dot_git) as f:
+                    gitdir = f.read().strip().removeprefix("gitdir: ")
+                head_path = os.path.join(os.path.join(d, gitdir), "HEAD")
+            else:
+                parent = os.path.dirname(d)
+                if parent == d:
+                    break
+                d = parent
+                continue
+            with open(head_path) as f:
+                head = f.read().strip()
+            branch = head.removeprefix("ref: refs/heads/") if head.startswith("ref: ") else head[:7]
+            break
+    except OSError:
+        branch = ""
+    if len(_git_cache) >= CWD_CACHE_MAX:
+        _git_cache.clear()
+    _git_cache[cwd] = (now, branch)
+    return branch
+
+
+def _hud_segments(tab_id: int) -> list[tuple[str, int]]:
+    boss = get_boss()
+    t = boss.tab_for_id(tab_id) if boss else None
+    cwd = (t.get_cwd_of_active_window() or "") if t is not None else ""
+    segs: list[tuple[str, int]] = []
+    branch = _git_branch(cwd) if cwd else ""
+    if branch:
+        segs += [(f" {ICON_BRANCH} ", HUD_ICON_FG), (f"{_truncate(branch, HUD_BRANCH_MAX)} ", HUD_TEXT_FG),
+                 (HUD_SEP, DIM_SEP)]
+    segs.append((f" {time.strftime('%H:%M')} ", HUD_CLOCK_FG))
+    return segs
+
+
+def _clock_tick(timer_id: int) -> None:
+    global _clock_timer
+    _clock_timer = None
+    boss = get_boss()
+    if boss is not None:
+        for os_window_id in list(boss.os_window_map):
+            mark_tab_bar_dirty(os_window_id, True)
+        wakeup_main_loop()
+    _schedule_clock()
+
+
+def _schedule_clock() -> None:
+    """Fire just after the next minute boundary, then reschedule: 1 repaint a
+    minute instead of a polling timer."""
+    global _clock_timer
+    if _clock_timer is None:
+        _clock_timer = add_timer(_clock_tick, 60.05 - (time.time() % 60), False)
+
+
 # --- Layout planning ---------------------------------------------------------
 #
 # kitty hands each tab a budget (max_tab_length) but never guarantees the tabs
@@ -571,7 +664,9 @@ def _plan(draw_data: DrawData, columns: int) -> dict | None:
     # The right-hand controls are only shed in a bar too narrow to hold even one
     # compact tab beside them. Close goes last of the three: it's the only one
     # with no keyboard equivalent bound in kitty.conf.
-    needs_chip = sum(compact) + max(0, n - 1) + active_cost > columns - RIGHT_W
+    # n, not n - 1: every visible tab draws one separator cell after itself
+    # (the last one an angled cap back into the bar).
+    needs_chip = sum(compact) + n + active_cost > columns - RIGHT_W
     reserve = chip_w if needs_chip else 0
     draw_new, buttons = True, WINDOW_BUTTONS
     for draw_new, buttons in (
@@ -585,12 +680,23 @@ def _plan(draw_data: DrawData, columns: int) -> dict | None:
     right_w = _right_width(draw_new, buttons)
     budget = columns - right_w - reserve
 
+    # The HUD only claims space a bar with every tab visible (compact, plus the
+    # active tab's title) can spare; it's the first thing to go, before any tab
+    # folds. Reserved ahead of the title pass so titles can't squeeze it out.
+    hud = _hud_segments(tabs[active].tab_id)
+    hud_w = sum(wcswidth(text) for text, _ in hud)
+    if not needs_chip and sum(compact) + n + active_cost <= budget - hud_w:
+        budget -= hud_w
+        right_w += hud_w
+    else:
+        hud = []
+
     widths = compact[:]
     hidden = [False] * n
 
     def total() -> int:
         visible = [i for i in range(n) if not hidden[i]]
-        return sum(widths[i] for i in visible) + max(0, len(visible) - 1)
+        return sum(widths[i] for i in visible) + len(visible)
 
     # Fold away the tabs furthest from the active one first (ties: the later
     # one, so the bar keeps its leading tabs). The active tab is never folded.
@@ -642,6 +748,7 @@ def _plan(draw_data: DrawData, columns: int) -> dict | None:
         "draw_new": draw_new,
         "buttons": tuple(buttons),
         "right_w": right_w,
+        "hud": hud,
     }
 
 
@@ -697,6 +804,9 @@ def draw_tab(
             _attn.get(os_window_id, {}).pop(tab.tab_id, None)
 
         fg, bg = _colors(os_window_id, tab.tab_id, tab.is_active, accent)
+        # kitty pre-applies active_tab_font_style (default bold-italic) before
+        # calling draw_tab; upright reads crisper and keeps the HUD upright too.
+        screen.cursor.italic = False
         screen.cursor.bold = tab.is_active
         # Drawn in two pieces only so the accent bar can carry its own
         # foreground; the rest is byte-identical to what the planner measured.
@@ -737,8 +847,16 @@ def draw_tab(
                 screen.cursor.fg = as_rgb(DIM_SEP)
                 screen.cursor.bg = as_rgb(DIM_BG)
                 screen.draw(SEP_SOFT)
+        else:
+            # Last visible tab: one angled cap back into the bar, so the lit
+            # tab is a parallelogram on both sides. Always one cell (a blank
+            # for an unlit tab) -- the planner counts it.
+            screen.cursor.fg = as_rgb(bg)
+            screen.cursor.bg = as_rgb(BAR_BG)
+            screen.draw(SEP_HARD if bg != BAR_BG else " ")
 
     if is_last:
+        screen.cursor.italic = False
         # Runs whether or not this tab drew anything: the chip and the
         # right-hand cluster belong to the bar, not to the last tab.
         chip = plan["chip"] if plan is not None else ""
@@ -771,6 +889,13 @@ def draw_tab(
             if pad:
                 screen.cursor.fg = screen.cursor.bg = 0
                 screen.draw(" " * pad)
+            hud = plan.get("hud", []) if plan is not None else []
+            for text, color in hud:
+                screen.cursor.fg = as_rgb(color)
+                screen.cursor.bg = as_rgb(BAR_BG)
+                screen.draw(text)
+            if hud:
+                _schedule_clock()
             if draw_new:
                 # Pinned beside the window cluster rather than trailing the last
                 # tab, so it stays at the same pixel as tabs come and go.
