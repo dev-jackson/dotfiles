@@ -80,7 +80,7 @@ ICON_TERMINAL = "\uf120"   # fa-terminal: bare ">_" (the old dev-terminal glyph 
 ICON_HOME = ""
 ICON_GIT_REPO = "\ue702"   # dev-git: outline mark, legible at 1 cell
 ICON_GIT_EXE = ""
-ICON_PYTHON = ""
+ICON_PYTHON = "\U000F0320"  # md-language_python (dev-python reads as a blob at 1 cell)
 ICON_NODE = ""
 ICON_DOCKER = ""
 ICON_RUST = ""
@@ -205,7 +205,21 @@ def _clean_title(title: str) -> str:
         title = rest
     if title.startswith(_home):
         title = "~" + title[len(_home):]
-    return title
+    return _abbrev_path(title)
+
+
+def _abbrev_path(title: str) -> str:
+    """fish-style: ~/work/client/api/src -> ~/w/c/a/src. Truncating a long
+    path from the right cuts off its last component -- the only part that
+    tells tabs apart -- so the middle shrinks instead. Non-paths untouched."""
+    if not title.startswith(("/", "~/", "…/")) or " " in title:
+        return title
+    parts = title.split("/")
+    if len(parts) <= 3:
+        return title
+    head, middle, last = parts[0], parts[1:-1], parts[-1]
+    short = [p[:2] if p[:1] in ".-_" else p[:1] for p in middle]
+    return "/".join([head, *short, last])
 
 # --- Clickable regions (window buttons + per-tab close) --------------------
 #
@@ -504,6 +518,16 @@ HUD_CLOCK_FG = 0xCDD6F4  # Mocha text
 
 _git_cache: dict[str, tuple[float, str]] = {}
 _clock_timer: int | None = None
+_seen_tabs: set[int] = set()
+NEW_TAB_SETTLE = 2.0
+
+
+def _repaint_all(timer_id: int) -> None:
+    boss = get_boss()
+    if boss is not None:
+        for os_window_id in list(boss.os_window_map):
+            mark_tab_bar_dirty(os_window_id, True)
+        wakeup_main_loop()
 
 
 def _git_branch(cwd: str) -> str:
@@ -610,6 +634,44 @@ def _right_width(draw_new: bool, buttons) -> int:
 RIGHT_W = _right_width(True, WINDOW_BUTTONS)
 
 
+# --- Status badges -------------------------------------------------------------
+#
+# Drawn after a tab's text, in their own color: state you'd otherwise have to
+# switch tabs to discover. Each badge's width depends only on its state (a
+# percentage is always padded to 3 digits), so a running progress bar never
+# changes the tab's width between updates and never re-lays-out the bar.
+
+BADGE_ZOOM = "\U000F004C"   # md-arrow_expand_all -- splits hidden by zoom
+BADGE_ERROR = "\U000F0028"  # md-alert_circle -- progress reported an error
+BADGE_BUSY = "\U000F0772"   # md-loading -- indeterminate progress ("…" read as a cut title)
+BADGE_ACTIVITY = "•"    # new output in a tab you're not looking at
+PROGRESS_FG = 0x94E2D5       # Mocha teal
+ZOOM_FG = 0xF9E2AF           # Mocha yellow
+
+
+def _badge(t, boss) -> tuple[str, int]:
+    """(text, color) of the most important badge for a tab, or ("", 0)."""
+    tab = boss.tab_for_id(t.tab_id) if boss else None
+    # 1. progress (OSC 9;4): a build/download running in that tab
+    if tab is not None and getattr(tab, "last_focused_window_with_progress_id", 0):
+        w = boss.window_id_map.get(tab.last_focused_window_with_progress_id)
+        state = getattr(getattr(getattr(w, "progress", None), "state", None), "name", "")
+        if state == "error":
+            return f"{BADGE_ERROR} ", ATTENTION
+        if state == "indeterminate":
+            return f"{BADGE_BUSY} ", PROGRESS_FG
+        if t.num_of_windows_with_progress:
+            pct = int(t.total_progress / t.num_of_windows_with_progress)
+            return f"{pct:>3}% ", PROGRESS_FG
+    # 2. background output since you last looked: the actionable one
+    if t.has_activity_since_last_focus and not t.is_active and not t.needs_attention:
+        return f"{BADGE_ACTIVITY} ", 0
+    # 3. zoomed split: the other panes are out of sight, keep them in mind
+    if t.layout_name == "stack" and t.num_window_groups > 1:
+        return f"{BADGE_ZOOM}{t.num_window_groups} ", ZOOM_FG
+    return "", 0
+
+
 def _tab_text(index: int, icon: str, title: str) -> str:
     """The exact cells a tab draws after its one-cell accent bar. Single source
     of truth: the planner measures this string, draw_tab draws that string."""
@@ -658,7 +720,17 @@ def _plan(draw_data: DrawData, columns: int) -> dict | None:
         if t.needs_attention and not t.is_active:
             icon = draw_data.tab_activity_symbol or icon
         icons.append(icon)
-    compact = [1 + wcswidth(_tab_text(i + 1, icons[i], "")) for i in range(n)]
+    boss = get_boss()
+    # A new tab's first frame is drawn before its shell has reported a cwd, so
+    # its icon and the HUD branch can be the parent's. One repaint once the
+    # shell has settled fixes that without waiting for the next clock tick.
+    fresh = [t.tab_id for t in tabs if t.tab_id not in _seen_tabs]
+    if fresh:
+        _seen_tabs.update(fresh)
+        add_timer(_repaint_all, NEW_TAB_SETTLE, False)
+    badges = [_badge(t, boss) for t in tabs]
+    badge_w = [wcswidth(b[0]) for b in badges]
+    compact = [1 + wcswidth(_tab_text(i + 1, icons[i], "")) + badge_w[i] for i in range(n)]
     close_w = wcswidth(f"{TAB_CLOSE} ")
     # Worst case chip width (as many digits as there are tabs), so reserving it
     # can't shift once the real hidden count is known -- a one-cell overshoot
@@ -734,7 +806,7 @@ def _plan(draw_data: DrawData, columns: int) -> dict | None:
         if not title:
             continue
         texts[i] = _tab_text(i + 1, icons[i], title)
-        widths[i] = 1 + wcswidth(texts[i]) + extra_close
+        widths[i] = 1 + wcswidth(texts[i]) + badge_w[i] + extra_close
         closes[i] = tabs[i].is_active
 
     visible = [i for i in range(n) if not hidden[i]]
@@ -750,6 +822,7 @@ def _plan(draw_data: DrawData, columns: int) -> dict | None:
     return {
         "columns": columns,
         "text": {tabs[i].tab_id: texts[i] for i in visible},
+        "badge": {tabs[i].tab_id: badges[i] for i in visible},
         "close": {tabs[i].tab_id: closes[i] for i in visible},
         "following": following,
         "chip": f" {ICON_MORE}{hidden_n} " if hidden_n else "",
@@ -793,12 +866,14 @@ def draw_tab(
         room = max_tab_length - wcswidth(_tab_text(index, icon, "")) - 1 - close_reserve
         text = _tab_text(index, icon, _truncate(_clean_title(tab.title or ""), room))
         draw_close = tab.is_active
+        badge = _badge(tab, get_boss())
         following = None
         if extra_data.next_tab is not None:
             nt = extra_data.next_tab
             following = (index + 1, nt.tab_id, nt.needs_attention, nt.is_active)
     else:
         text = plan["text"].get(tab.tab_id)
+        badge = plan["badge"].get(tab.tab_id, ("", 0))
         draw_close = plan["close"].get(tab.tab_id, False)
         following = plan["following"].get(tab.tab_id)
 
@@ -835,6 +910,12 @@ def draw_tab(
         screen.draw(head)
         screen.cursor.fg = as_rgb(rest_fg)
         screen.draw(" " + tail)
+        badge_text, badge_color = badge
+        if badge_text:
+            # On the lit tab every badge uses the dark text color: an accent on
+            # an accent fill would vanish. 0 means "use the tab's accent".
+            screen.cursor.fg = as_rgb(fg if tab.is_active else (badge_color or accent))
+            screen.draw(badge_text)
         screen.cursor.bold = False
 
         if draw_close:
