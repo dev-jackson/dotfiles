@@ -299,7 +299,16 @@ def collect() -> list[tuple[str, list[tuple[str, str]]]]:
     best: dict[str, Any] = {}
     for mode in opts.keyboard_modes.values():
         for definitions in mode.keymap.values():
+            # One list holds every definition starting with this key: chords
+            # sharing a prefix (ctrl+shift+p>n, >y, ...) *and* overridden
+            # bindings. Per full key sequence, the last definition is the one
+            # kitty runs; earlier ones are dead. Listing them showed ⇧⌘D as
+            # both "split horizontal" (ours) and "cerrar ventana" (the default
+            # it shadows).
+            live: dict[tuple, Any] = {}
             for kd in definitions:
+                live[tuple(kd.full_key_sequence_to_trigger)] = kd
+            for kd in live.values():
                 definition = kd.definition
                 if not definition or definition in NUMBERED_WINDOWS:
                     continue
