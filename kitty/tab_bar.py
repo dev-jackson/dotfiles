@@ -29,6 +29,7 @@ import os
 import re
 import socket
 import time
+from urllib.parse import unquote, urlparse
 
 from kitty.fast_data_types import (
     Screen,
@@ -299,6 +300,32 @@ def _icon_for_tab(tab_id: int, title: str = "") -> str:
     return icon
 
 
+def _active_cwd(t) -> str:
+    """cwd of a Tab's active window. Prefers the path the shell itself reports
+    (OSC 7, sent by kitty's shell integration on every prompt and every cd)
+    over asking the OS for the foreground process's cwd. Measured: the tab bar
+    repaints when the shell retitles the tab in precmd -- before the prompt is
+    marked, so `at_prompt` is still False -- and right then the OS lookup
+    returned "/" or nothing (starship/git were the newest processes in the
+    group). The HUD lost its branch and the icon its repo on half the prompts.
+    The shell's report was right every time, and costs no syscall.
+    A program that cds on its own keeps showing the shell's directory, which
+    is the one you're actually "in". A cwd reported by a remote shell (kitten
+    ssh) carries a foreign host and is skipped."""
+    w = getattr(t, "active_window", None)
+    url = getattr(getattr(w, "screen", None), "last_reported_cwd", None)
+    if url:
+        try:
+            u = urlparse(url.decode("utf-8", "replace") if isinstance(url, bytes) else url)
+            host = (u.hostname or "").lower()
+            if u.path and (not host or host == "localhost" or host in _LOCAL_HOSTS
+                           or host.split(".")[0] in _LOCAL_HOSTS):
+                return unquote(u.path)
+        except ValueError:
+            pass
+    return t.get_cwd_of_active_window() or ""
+
+
 def _query_icon_for_tab(tab_id: int) -> str:
     boss = get_boss()
     t = boss.tab_for_id(tab_id) if boss else None
@@ -309,7 +336,7 @@ def _query_icon_for_tab(tab_id: int) -> str:
         icon = EXE_ICONS.get(exe)
         if icon:
             return icon
-    cwd = t.get_cwd_of_active_window() or ""
+    cwd = _active_cwd(t)
     return _icon_for_cwd(cwd) if cwd else ICON_TERMINAL
 
 
@@ -578,7 +605,7 @@ def _git_branch(cwd: str) -> str:
 def _hud_segments(tab_id: int) -> list[tuple[str, int]]:
     boss = get_boss()
     t = boss.tab_for_id(tab_id) if boss else None
-    cwd = (t.get_cwd_of_active_window() or "") if t is not None else ""
+    cwd = _active_cwd(t) if t is not None else ""
     segs: list[tuple[str, int]] = []
     branch = _git_branch(cwd) if cwd else ""
     if branch:

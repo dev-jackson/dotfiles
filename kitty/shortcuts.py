@@ -194,6 +194,10 @@ LABELS = {
     "kitten hints --type hash --program -": "hash git al portapapeles",
     "kitten hints --type linenum": "abrir archivo:línea en el editor",
     "kitten hints --type hyperlink": "abrir un hyperlink",
+    "kitten hints --type=linenum --linenum-action=tab": "archivo:línea en nvim",
+    "kitten hints --type=hash --program @": "copiar hash git",
+    "kitten hints --type=path --program @": "copiar un path",
+    "copy_last_command_output": "copiar salida último cmd",
     "kitten unicode_input": "insertar unicode / emoji",
     "kitten choose-files": "elegir archivo",
     "kitten choose-files --mode=dir": "elegir carpeta",
@@ -222,10 +226,10 @@ GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("OS WINDOW", ("new_os_window", "close_os_window", "toggle_maximized", "toggle_fullscreen",
                    "minimize_macos_window", "macos_cycle", "hide_macos", "quit")),
     ("SCROLL Y SCROLLBACK", ("scroll_", "show_scrollback", "show_last_command_output",
-                             "search_scrollback", "clear_terminal")),
+                             "copy_last_command_output", "search_scrollback", "clear_terminal")),
     ("LAYOUT Y APARIENCIA", ("next_layout", "goto_layout", "toggle_layout", "layout_action", "change_font_size",
                              "set_background_opacity")),
-    ("SELECCIÓN", ("copy_", "paste_", "pass_selection_to_program")),
+    ("SELECCIÓN", ("copy_to", "copy_or", "paste_", "pass_selection_to_program")),
 )
 OTHER_GROUP = "OTROS"
 
