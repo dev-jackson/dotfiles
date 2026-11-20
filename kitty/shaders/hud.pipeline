@@ -1,0 +1,50 @@
+# "HUD" pipeline: futuristic, event-driven feedback. Loaded via
+# `custom_shaders hud` in kitty.conf (kitty looks in <config>/shaders/).
+#
+# Every group has an animation_start, so a group that isn't animating isn't
+# drawn at all: an idle terminal costs zero extra GPU work. Colors are Catppuccin
+# Mocha converted to *linear* RGB (shaders work in linear light, not sRGB).
+
+# 1. Cursor jumps leave an electric arc instead of the flat built-in trail.
+#    Subscribing to cursor-trail-move suppresses kitty's own trail renderer.
+#    Short-lived (110ms) so it reads as a spark, not as a lingering effect.
+startgroup
+    animation_start cursor-trail-move
+    animation_stop cursor-trail-stop
+    var float3 BOLT_COLOR = float3(0.610, 0.672, 0.905)
+    var float3 GLOW_COLOR = float3(0.597, 0.381, 0.930)
+    var float DURATION = 0.11
+    var float JAGGEDNESS = 0.06
+    var float GLOW_WIDTH = 4.5
+    shaders cursor-trail-lightning
+endgroup
+
+# 2. Changing split: the newly focused pane flashes an inner glow along its
+#    edges, then settles. INACTIVE_DIM 1 leaves the other panes alone during
+#    the flash (inactive_text_alpha already dims them statically), and the tab
+#    bar is kept outside the effect.
+startgroup
+    animation_start window-focus-in
+    animation_stop 420
+    animation_curve ease-out
+    animation_step 16
+    var float HIGHLIGHT_INTENSITY = 0.08
+    var float BORDER_WIDTH = 0.012
+    var float BORDER_GLOW = 0.7
+    var float INACTIVE_DIM = 1.0
+    var bool DIM_CENTRAL_AREA_ONLY = true
+    var bool INCLUDE_WINDOW_PADDING = true
+    shaders focus-highlight
+endgroup
+
+# 3. Changing tab: content sweeps in from the tab bar edge with a soft front,
+#    timed to match tab_bar.py's 160ms crossfade so bar and content move as one.
+startgroup
+    animation_start tab-change
+    animation_stop 220
+    animation_curve ease-out
+    animation_step 16
+    var int ANIMATION_TYPE = 1
+    var float EDGE_SOFTNESS = 0.08
+    shaders tab-change
+endgroup
