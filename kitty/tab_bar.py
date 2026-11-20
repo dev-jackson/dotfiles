@@ -35,6 +35,7 @@ from urllib.parse import unquote, urlparse
 from kitty.fast_data_types import (
     Screen,
     add_timer,
+    current_focused_os_window_id,
     get_boss,
     mark_tab_bar_dirty,
     monotonic,
@@ -444,6 +445,9 @@ def _live(os_window_id: int) -> bool:
     # Finished pulses are deliberately *not* dropped here: the recorded start
     # time is also the "this tab already pulsed" marker that stops it firing
     # again on every repaint. draw_tab clears it when attention goes away.
+    focus = _focus_state.get(os_window_id)
+    if focus is not None and focus[0] and now - focus[0] < FOCUS_FADE + GRACE:
+        alive = True
     starts = _attn.get(os_window_id)
     if starts:
         limit = PULSE_PERIOD * PULSE_COUNT + GRACE
@@ -455,7 +459,7 @@ def _live(os_window_id: int) -> bool:
 def _tick(timer_id: int) -> None:
     global _timer
     alive = False
-    for os_window_id in {*_fade, *_attn}:
+    for os_window_id in {*_fade, *_attn, *_focus_state}:
         if _live(os_window_id):
             # The second argument is the dirty flag itself -- passing False
             # here marks the bar *clean* and the animation never renders.
@@ -965,6 +969,43 @@ def _plan(draw_data: DrawData, columns: int) -> dict | None:
     }
 
 
+# --- Unfocused window -------------------------------------------------------
+#
+# A macOS window that isn't key dims its title bar; kitty's bar didn't, so two
+# kitty windows (or kitty behind another app) looked equally "active". kitty
+# already repaints the bar on every focus change (Boss.on_focus marks it
+# dirty); here every color is pulled toward the bar background while the OS
+# window lacks focus, with a short fade so it eases like the rest of the bar.
+
+UNFOCUSED_MUTE = 0.45    # fraction of the way to BAR_BG
+FOCUS_FADE = 0.15 * SLOWMO
+_focus_state: dict[int, tuple[float, float, float]] = {}   # os_window_id -> (start, from, to)
+_cur_mute = 0.0
+
+
+def _focus_mute(os_window_id: int) -> float:
+    try:
+        focused = current_focused_os_window_id() == os_window_id
+    except Exception:
+        focused = True
+    target = 0.0 if focused else UNFOCUSED_MUTE
+    now = monotonic()
+    st = _focus_state.get(os_window_id)
+    if st is None:
+        _focus_state[os_window_id] = (0.0, target, target)
+        return target
+    start, a, b = st
+    cur = b if not start else a + (b - a) * _ease_out((now - start) / FOCUS_FADE)
+    if b != target:
+        _focus_state[os_window_id] = (now, cur, target)
+        _start_timer()
+    return cur
+
+
+def _rgb(color: int) -> int:
+    return as_rgb(_lerp(color, BAR_BG, _cur_mute) if _cur_mute > 0 else color)
+
+
 def draw_tab(
     draw_data: DrawData,
     screen: Screen,
@@ -976,6 +1017,8 @@ def draw_tab(
     extra_data: ExtraData,
 ) -> int:
     os_window_id = draw_data.os_window_id
+    global _cur_mute
+    _cur_mute = _focus_mute(os_window_id)
     if index == 1:
         if not extra_data.for_layout:
             _reset_regions(os_window_id)
@@ -1028,8 +1071,8 @@ def draw_tab(
         # Drawn in two pieces only so the accent bar can carry its own
         # foreground; the rest is byte-identical to what the planner measured.
         bar = _fill_glyph(os_window_id, tab.is_active)
-        screen.cursor.fg = as_rgb(accent)
-        screen.cursor.bg = as_rgb(bg)
+        screen.cursor.fg = _rgb(accent)
+        screen.cursor.bg = _rgb(bg)
         screen.draw(bar)
         # Index in the accent, the rest in a neutral tone -- except a tab that
         # needs attention, which stays fully red so it can't be missed.
@@ -1037,25 +1080,25 @@ def draw_tab(
             os_window_id, tab.tab_id, tab.is_active, accent, INACTIVE_FG
         )[0]
         head, _, tail = text.partition(" ")
-        screen.cursor.fg = as_rgb(fg)
+        screen.cursor.fg = _rgb(fg)
         screen.draw(head)
-        screen.cursor.fg = as_rgb(rest_fg)
+        screen.cursor.fg = _rgb(rest_fg)
         screen.draw(" " + tail)
         badge_text, badge_color = badge
         if badge_text:
             # On the lit tab every badge uses the dark text color: an accent on
             # an accent fill would vanish. 0 means "use the tab's accent".
             # Lerped like the text, so it doesn't snap color on frame one.
-            screen.cursor.fg = as_rgb(fg if attention else _colors(
+            screen.cursor.fg = _rgb(fg if attention else _colors(
                 os_window_id, tab.tab_id, tab.is_active, accent, badge_color or accent)[0])
             screen.draw(badge_text)
         screen.cursor.bold = False
 
         if draw_close:
             close_start = screen.cursor.x
-            screen.cursor.fg = as_rgb(fg if attention else _colors(
+            screen.cursor.fg = _rgb(fg if attention else _colors(
                 os_window_id, tab.tab_id, tab.is_active, accent, CLOSE_DIM_FG)[0])
-            screen.cursor.bg = as_rgb(bg)
+            screen.cursor.bg = _rgb(bg)
             screen.draw(f"{TAB_CLOSE} ")
             if not extra_data.for_layout:
                 _register(os_window_id, "tab", close_start, screen.cursor.x, tab.tab_id)
@@ -1077,27 +1120,27 @@ def draw_tab(
                 # to the hairline here and fade *it*. Previously the hairline
                 # popped in on the very last frame.
                 k = lit / SEP_SOFT_HANDOFF
-                screen.cursor.fg = as_rgb(_lerp(DIM_SEP, _lerp(bg, next_bg, 0.5), k))
-                screen.cursor.bg = as_rgb(_lerp(bg, next_bg, 0.5))
+                screen.cursor.fg = _rgb(_lerp(DIM_SEP, _lerp(bg, next_bg, 0.5), k))
+                screen.cursor.bg = _rgb(_lerp(bg, next_bg, 0.5))
                 screen.draw(SEP_SOFT)
             elif bg != next_bg:
                 # Hard triangle: only ever touches the active tab, so the seam
                 # always transitions cleanly between the two real segment colors.
-                screen.cursor.fg = as_rgb(bg)
-                screen.cursor.bg = as_rgb(next_bg)
+                screen.cursor.fg = _rgb(bg)
+                screen.cursor.bg = _rgb(next_bg)
                 screen.draw(SEP_HARD)
             else:
                 # Two inactive tabs in a row: a faint hairline instead of a loud
                 # accent-colored triangle between them.
-                screen.cursor.fg = as_rgb(DIM_SEP)
-                screen.cursor.bg = as_rgb(DIM_BG)
+                screen.cursor.fg = _rgb(DIM_SEP)
+                screen.cursor.bg = _rgb(DIM_BG)
                 screen.draw(SEP_SOFT)
         else:
             # Last visible tab: one angled cap back into the bar, so the lit
             # tab is a parallelogram on both sides. Always one cell (a blank
             # for an unlit tab) -- the planner counts it.
-            screen.cursor.fg = as_rgb(bg)
-            screen.cursor.bg = as_rgb(BAR_BG)
+            screen.cursor.fg = _rgb(bg)
+            screen.cursor.bg = _rgb(BAR_BG)
             screen.draw(SEP_HARD if bg != BAR_BG else " ")
 
     if is_last:
@@ -1122,8 +1165,8 @@ def draw_tab(
                 # the chip carries the attention color (id -1: the chip is not
                 # a tab, it just borrows the pulse bookkeeping).
                 chip_fg = _attention_color(os_window_id, -1) if plan["chip_attention"] else NEW_FG
-                screen.cursor.fg = as_rgb(chip_fg)
-                screen.cursor.bg = as_rgb(BAR_BG)
+                screen.cursor.fg = _rgb(chip_fg)
+                screen.cursor.bg = _rgb(BAR_BG)
                 screen.draw(chip)
                 _register(os_window_id, "win", chip_start, screen.cursor.x, "select_tab")
             if plan is None or not plan["chip_attention"]:
@@ -1147,8 +1190,8 @@ def draw_tab(
                 _hud_settled[os_window_id] = {text for text, _ in hud}
             for text, color in hud:
                 fade_in = fading and text not in settled
-                screen.cursor.fg = as_rgb(_lerp(BAR_BG, color, hud_t) if fade_in else color)
-                screen.cursor.bg = as_rgb(BAR_BG)
+                screen.cursor.fg = _rgb(_lerp(BAR_BG, color, hud_t) if fade_in else color)
+                screen.cursor.bg = _rgb(BAR_BG)
                 screen.draw(text)
             if hud:
                 _schedule_clock()
@@ -1164,14 +1207,14 @@ def draw_tab(
                 # Brighter than min/max on purpose: it's the only button here
                 # that isn't discoverable some other way.
                 new_start = screen.cursor.x
-                screen.cursor.fg = as_rgb(NEW_FG)
-                screen.cursor.bg = as_rgb(BAR_BG)
+                screen.cursor.fg = _rgb(NEW_FG)
+                screen.cursor.bg = _rgb(BAR_BG)
                 screen.draw(f" {BTN_NEW} ")
                 _register(os_window_id, "win", new_start, screen.cursor.x, "new_tab")
             for glyph, action, color in buttons:
                 start = screen.cursor.x
-                screen.cursor.fg = as_rgb(color)
-                screen.cursor.bg = as_rgb(BAR_BG)
+                screen.cursor.fg = _rgb(color)
+                screen.cursor.bg = _rgb(BAR_BG)
                 screen.draw(f" {glyph} ")
                 _register(os_window_id, "win", start, screen.cursor.x, action)
 
