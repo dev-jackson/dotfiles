@@ -118,6 +118,7 @@ LABELS = {
     "move_tab_forward": "mover tab →",
     "move_tab_backward": "mover tab ←",
     "set_tab_title": "renombrar tab",
+    "goto_tab 1": "ir a la tab 1…9",
     # Ventanas / splits
     "new_window": "nueva ventana",
     "close_window": "cerrar ventana",
@@ -140,6 +141,7 @@ LABELS = {
     "resize_window taller": "más alta",
     "resize_window shorter": "más baja",
     "layout_action rotate": "rotar splits",
+    "toggle_layout stack": "zoom del split (on/off)",
     # OS window
     "new_os_window": "nueva OS window",
     "close_os_window": "cerrar OS window",
@@ -221,7 +223,7 @@ GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
                    "minimize_macos_window", "macos_cycle", "hide_macos", "quit")),
     ("SCROLL Y SCROLLBACK", ("scroll_", "show_scrollback", "show_last_command_output",
                              "search_scrollback", "clear_terminal")),
-    ("LAYOUT Y APARIENCIA", ("next_layout", "goto_layout", "layout_action", "change_font_size",
+    ("LAYOUT Y APARIENCIA", ("next_layout", "goto_layout", "toggle_layout", "layout_action", "change_font_size",
                              "set_background_opacity")),
     ("SELECCIÓN", ("copy_", "paste_", "pass_selection_to_program")),
 )
@@ -231,12 +233,13 @@ OTHER_GROUP = "OTROS"
 # the whole `launch --type=overlay ... kitty +kitten shortcuts.py` command line.
 SELF = "shortcuts.py"
 
-# Actions worth hiding: numeric window jumps are 10 near-identical lines that
-# push more useful bindings off the sheet. ⌘1 is discoverable from ⌘2 anyway.
+# Actions worth hiding: numeric window/tab jumps are near-identical lines that
+# push more useful bindings off the sheet. `goto_tab 1` stays, labelled as the
+# whole ⌘1…9 range.
 NUMBERED_WINDOWS = {
     f"{n}_window" for n in
     ("first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth")
-}
+} | {f"goto_tab {n}" for n in range(2, 10)}
 
 
 # Longest label rendered. Unlabeled actions fall back to their raw definition,

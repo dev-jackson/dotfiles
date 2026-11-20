@@ -26,6 +26,8 @@ Enabled via `tab_bar_style custom` in kitty.conf.
 """
 
 import os
+import re
+import socket
 
 from kitty.fast_data_types import (
     Screen,
@@ -61,7 +63,8 @@ DIM_BG = 0x181825      # Mocha mantle — background of inactive tabs
 BAR_BG = 0x11111B      # Mocha crust — tab_bar_background
 DIM_SEP = 0x313244     # Mocha surface0 — faint separator between two inactive tabs
 ATTENTION = 0xF38BA8   # Mocha red — overrides accent when a tab needs attention
-NEW_FG = 0x7F849C      # Mocha overlay1 — the "+" button (5.1:1 on BAR_BG, AA text)
+NEW_FG = 0xA6ADC8      # Mocha subtext0 — the "+" button / overflow chip (~8:1 on BAR_BG)
+BTN_FG = 0x7F849C      # Mocha overlay1 — min/max buttons (5.1:1 on BAR_BG, AA text)
 
 SEP_HARD = ""  # solid powerline right-pointing triangle (around active tab)
 SEP_SOFT = ""  # thin right-pointing chevron (between two inactive tabs)
@@ -84,6 +87,7 @@ ICON_NEOVIM = ""
 ICON_SSH = "\U000F08C0"
 ICON_ROBOT = "\U000F06A9"   # Claude / AI agent CLIs
 ICON_MONITOR = ""     # htop/btop/top
+ICON_MUX = "\U000F0BCC"     # md-view_split_vertical -- terminal multiplexers
 
 # OS-window controls + per-tab close, drawn by us since hide_window_decorations
 # hides macOS's own traffic lights. Codepoints checked against nerd-fonts'
@@ -99,6 +103,13 @@ ICON_MORE = "\U000F01D9"  # md-dots_horizontal -- the "N tabs folded away" chip
 # literally what's running right now, the strongest "personality" signal.
 EXE_ICONS = {
     "claude": ICON_ROBOT,
+    "pi": ICON_ROBOT,
+    "codex": ICON_ROBOT,
+    "gemini": ICON_ROBOT,
+    "aider": ICON_ROBOT,
+    "herdr": ICON_MUX,
+    "tmux": ICON_MUX,
+    "zellij": ICON_MUX,
     "ssh": ICON_SSH,
     "mosh-client": ICON_SSH,
     "vim": ICON_VIM,
@@ -149,7 +160,48 @@ CWD_MARKERS = [
 ]
 
 _home = os.path.expanduser("~")
-_cwd_icon_cache: dict[str, str] = {}
+
+# Both caches exist because draw_tab runs twice per frame, and at 60fps during
+# an animation: without them every frame would query every tab's foreground
+# process (a sysctl round-trip each) and listdir() every cwd.
+#   tab icon: short TTL, so starting `nvim` updates the icon within a second.
+#   cwd icon: longer TTL (a `git init` shows up eventually) + a size cap, since
+#   it's keyed by path and would otherwise grow for the life of the process.
+TAB_ICON_TTL = 1.0
+CWD_ICON_TTL = 30.0
+CWD_CACHE_MAX = 256
+_tab_icon_cache: dict[int, tuple[float, str]] = {}
+_cwd_icon_cache: dict[str, tuple[float, str]] = {}
+
+# --- Title cleanup -------------------------------------------------------------
+#
+# Programs (herdr, some prompts) title the tab "host: dir". On a laptop the
+# host is always this machine, so it's pure noise that eats the tab's width.
+# Only *local* host names are stripped: "user@server: dir" from ssh keeps its
+# prefix, because there the host is the information.
+def _local_hostnames() -> set[str]:
+    names = set()
+    try:
+        full = socket.gethostname().lower()
+        names |= {full, full.split(".")[0]}
+    except OSError:
+        pass
+    return {n for n in names if n}
+
+
+_LOCAL_HOSTS = _local_hostnames()
+_LOCAL_SUFFIX = re.compile(r"^[a-z0-9-]+\.(?:lan|local|home|localdomain): ", re.IGNORECASE)
+
+
+def _clean_title(title: str) -> str:
+    head, sep, rest = title.partition(": ")
+    if sep and rest and "@" not in head and (
+        head.lower() in _LOCAL_HOSTS or _LOCAL_SUFFIX.match(title)
+    ):
+        title = rest
+    if title.startswith(_home):
+        title = "~" + title[len(_home):]
+    return title
 
 # --- Clickable regions (window buttons + per-tab close) --------------------
 #
@@ -162,11 +214,11 @@ _click_regions: dict[int, dict[str, list]] = {}
 
 # Window buttons: (glyph, boss method invoked on click, draw color). Close is
 # tinted with ATTENTION (Mocha red) since it closes the whole OS window with
-# no confirmation and there's no hover to warn otherwise; min/max stay a
-# calm DIM_SEP so the destructive one is the only one that stands out.
+# no confirmation and there's no hover to warn otherwise. min/max use BTN_FG:
+# quiet, but still AA-legible (DIM_SEP, used before, was ~1.4:1 -- invisible).
 WINDOW_BUTTONS = (
-    (BTN_MIN, "minimize_macos_window", DIM_SEP),
-    (BTN_MAX, "toggle_maximized", DIM_SEP),
+    (BTN_MIN, "minimize_macos_window", BTN_FG),
+    (BTN_MAX, "toggle_maximized", BTN_FG),
     (BTN_CLOSE, "close_os_window", ATTENTION),
 )
 
@@ -180,9 +232,10 @@ def _register(os_window_id: int, kind: str, start: int, end: int, payload: objec
 
 
 def _icon_for_cwd(cwd: str) -> str:
+    now = monotonic()
     cached = _cwd_icon_cache.get(cwd)
-    if cached is not None:
-        return cached
+    if cached is not None and now - cached[0] < CWD_ICON_TTL:
+        return cached[1]
     icon = ICON_TERMINAL
     try:
         entries = set(os.listdir(cwd))
@@ -197,11 +250,25 @@ def _icon_for_cwd(cwd: str) -> str:
             icon = ICON_GIT_REPO
         elif os.path.normpath(cwd) == os.path.normpath(_home):
             icon = ICON_HOME
-    _cwd_icon_cache[cwd] = icon
+    if len(_cwd_icon_cache) >= CWD_CACHE_MAX:
+        _cwd_icon_cache.clear()
+    _cwd_icon_cache[cwd] = (now, icon)
     return icon
 
 
 def _icon_for_tab(tab_id: int) -> str:
+    now = monotonic()
+    cached = _tab_icon_cache.get(tab_id)
+    if cached is not None and now - cached[0] < TAB_ICON_TTL:
+        return cached[1]
+    icon = _query_icon_for_tab(tab_id)
+    if len(_tab_icon_cache) >= CWD_CACHE_MAX:
+        _tab_icon_cache.clear()  # closed tabs' ids never come back
+    _tab_icon_cache[tab_id] = (now, icon)
+    return icon
+
+
+def _query_icon_for_tab(tab_id: int) -> str:
     boss = get_boss()
     t = boss.tab_for_id(tab_id) if boss else None
     if t is None:
@@ -497,7 +564,8 @@ def _plan(draw_data: DrawData, columns: int) -> dict | None:
     # are cheap enough that a bar full of them eats every last cell, and a bar
     # where even the active tab is a bare number is worse than one that folds
     # a few more tabs away.
-    active_title = _truncate(tabs[active].title or "", TITLE_ACTIVE)
+    titles = [_clean_title(t.title or "") for t in tabs]
+    active_title = _truncate(titles[active], TITLE_ACTIVE)
     active_cost = wcswidth(active_title) + 1 + close_w if active_title else 0
 
     # The right-hand controls are only shed in a bar too narrow to hold even one
@@ -545,7 +613,7 @@ def _plan(draw_data: DrawData, columns: int) -> dict | None:
         room = budget - total() - 1 - extra_close
         if room < TITLE_MIN:
             continue
-        title = _truncate(tabs[i].title or "", min(TITLE_MAX, room))
+        title = _truncate(titles[i], min(TITLE_MAX, room))
         if not title:
             continue
         texts[i] = _tab_text(i + 1, icons[i], title)
@@ -605,7 +673,7 @@ def draw_tab(
             icon = draw_data.tab_activity_symbol or icon
         close_reserve = wcswidth(f"{TAB_CLOSE} ") if tab.is_active else 0
         room = max_tab_length - wcswidth(_tab_text(index, icon, "")) - 1 - close_reserve
-        text = _tab_text(index, icon, _truncate(tab.title or "", room))
+        text = _tab_text(index, icon, _truncate(_clean_title(tab.title or ""), room))
         draw_close = tab.is_active
         following = None
         if extra_data.next_tab is not None:
@@ -732,7 +800,7 @@ def draw_tab(
 # is swallowed and dispatched to our action; anything else (motion/drag,
 # middle-click, clicks outside our regions) falls through to kitty's normal
 # handling unchanged. This depends on TabManager.handle_tab_bar_mouse's
-# signature (kitty 0.47.2, kitty/tabs.py) -- if a future kitty renames or
+# signature (checked against kitty 0.49.1 and 0.51.0, kitty/tabs.py) -- if a future kitty renames or
 # reshapes it, this patch becomes a no-op fallthrough rather than crashing.
 from kitty.fast_data_types import GLFW_MOUSE_BUTTON_LEFT, GLFW_PRESS, GLFW_RELEASE  # noqa: E402
 from kitty.tabs import TabManager  # noqa: E402
