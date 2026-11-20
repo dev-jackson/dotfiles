@@ -197,7 +197,16 @@ _LOCAL_HOSTS = _local_hostnames()
 _LOCAL_SUFFIX = re.compile(r"^[a-z0-9-]+\.(?:lan|local|home|localdomain): ", re.IGNORECASE)
 
 
+# A leading status glyph some TUIs animate in their title (Claude Code, etc.):
+# a braille spinner frame while working, a static star when idle. At one cell
+# the braille frames read as a rendering glitch, and they change ~10x a second.
+# Stripped here; a spinning one becomes the steady BADGE_BUSY badge instead.
+_SPINNER = re.compile(r"^[\u2800-\u28ff]\s+")
+_STATUS_GLYPH = re.compile(r"^[\u2800-\u28ff\u2733\u2736\u273b\u273d\u2722\u00b7\u23fa]\s+")
+
+
 def _clean_title(title: str) -> str:
+    title = _STATUS_GLYPH.sub("", title)
     head, sep, rest = title.partition(": ")
     if sep and rest and "@" not in head and (
         head.lower() in _LOCAL_HOSTS or _LOCAL_SUFFIX.match(title)
@@ -278,7 +287,8 @@ def _icon_for_tab(tab_id: int, title: str = "") -> str:
     # Keyed by title too: a `cd` or a new program retitles the tab, and that
     # must not wait out the TTL behind a stale icon.
     now = monotonic()
-    key = (tab_id, title)
+    # Spinner frames retitle the tab ~10x a second; they mustn't miss the cache.
+    key = (tab_id, _STATUS_GLYPH.sub("", title))
     cached = _tab_icon_cache.get(key)
     if cached is not None and now - cached[0] < TAB_ICON_TTL:
         return cached[1]
@@ -324,7 +334,7 @@ def _accent(index: int) -> int:
 # every frame of every animation.
 
 FRAME = 1 / 60
-FADE_DURATION = 0.16     # tab switch crossfade
+FADE_DURATION = 0.12     # tab switch crossfade, = the tab-change shader
 PULSE_PERIOD = 0.2       # one attention pulse
 PULSE_COUNT = 3
 PULSE_DIM = 0.55         # dimmest point of a pulse, as a fraction of full
@@ -367,7 +377,7 @@ def _scale(color: int, factor: float) -> int:
 
 
 def _ease_out(t: float) -> float:
-    """Cubic ease-out: most of the distance is covered early, so a 160ms fade
+    """Cubic ease-out: most of the distance is covered early, so a 120ms fade
     still feels instant to the hand that pressed the key."""
     if t <= 0.0:
         return 0.0
@@ -572,10 +582,23 @@ def _hud_segments(tab_id: int) -> list[tuple[str, int]]:
     segs: list[tuple[str, int]] = []
     branch = _git_branch(cwd) if cwd else ""
     if branch:
-        segs += [(f" {ICON_BRANCH} ", HUD_ICON_FG), (f"{_truncate(branch, HUD_BRANCH_MAX)} ", HUD_TEXT_FG),
+        segs += [(f" {ICON_BRANCH} ", HUD_ICON_FG), (f"{_truncate_middle(branch, HUD_BRANCH_MAX)} ", HUD_TEXT_FG),
                  (HUD_SEP, DIM_SEP)]
     segs.append((f" {time.strftime('%H:%M')} ", HUD_CLOCK_FG))
     return segs
+
+
+def _truncate_middle(name: str, budget: int) -> str:
+    """feature/una-rama-muy-larga-de-verdad -> feature/…de-verdad. A branch's
+    end is what tells it apart, and its "type/" prefix is what you scan for;
+    cutting from the right threw both kinds of information away."""
+    if wcswidth(name) <= budget or not name.isascii():
+        return _truncate(name, budget)
+    head = name[: name.find("/") + 1] if 0 < name.find("/") < budget // 2 else ""
+    tail = budget - len(head) - 1
+    if not head:
+        head, tail = name[: (budget - 1) // 2], budget - 1 - (budget - 1) // 2
+    return f"{head}…{name[-tail:]}"
 
 
 def _clock_tick(timer_id: int) -> None:
@@ -663,6 +686,9 @@ def _badge(t, boss) -> tuple[str, int]:
         if t.num_of_windows_with_progress:
             pct = int(t.total_progress / t.num_of_windows_with_progress)
             return f"{pct:>3}% ", PROGRESS_FG
+    # 1b. a TUI animating a spinner in its title is busy, same as above
+    if _SPINNER.match(t.title or ""):
+        return f"{BADGE_BUSY} ", PROGRESS_FG
     # 2. background output since you last looked: the actionable one
     if t.has_activity_since_last_focus and not t.is_active and not t.needs_attention:
         return f"{BADGE_ACTIVITY} ", 0

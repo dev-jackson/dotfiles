@@ -20,12 +20,12 @@ startgroup
 endgroup
 
 # 2. Changing split: the newly focused pane flashes an inner glow along its
-#    edges, then settles. INACTIVE_DIM 1 leaves the other panes alone during
-#    the flash (inactive_text_alpha already dims them statically), and the tab
-#    bar is kept outside the effect.
+#    edges, then settles (300ms; it never hides content). INACTIVE_DIM 1
+#    leaves the other panes alone during the flash (inactive_text_alpha
+#    already dims them statically), and the tab bar is kept outside the effect.
 startgroup
     animation_start window-focus-in
-    animation_stop 420
+    animation_stop 300
     animation_curve ease-out
     animation_step 16
     var float HIGHLIGHT_INTENSITY = 0.08
@@ -37,11 +37,13 @@ startgroup
     shaders focus-highlight
 endgroup
 
-# 3. Changing tab: content sweeps in from the tab bar edge with a soft front,
-#    timed to match tab_bar.py's 160ms crossfade so bar and content move as one.
+# 3. Changing tab: content sweeps in from the tab bar edge with a soft front.
+#    Kept at 120ms: the sweep hides part of the new tab until it ends, so at
+#    220ms every tab switch *felt* slow even though nothing was computing. Same
+#    length as tab_bar.py's crossfade so bar and content still move as one.
 startgroup
     animation_start tab-change
-    animation_stop 220
+    animation_stop 120
     animation_curve ease-out
     animation_step 16
     var int ANIMATION_TYPE = 1
