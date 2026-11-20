@@ -67,6 +67,7 @@ BAR_BG = 0x11111B      # Mocha crust — tab_bar_background
 DIM_SEP = 0x45475A     # Mocha surface1 — faint slash between two inactive tabs
 ATTENTION = 0xF38BA8   # Mocha red — overrides accent when a tab needs attention
 NEW_FG = 0xA6ADC8      # Mocha subtext0 — the "+" button / overflow chip (~8:1 on BAR_BG)
+INACTIVE_FG = 0xA6ADC8 # Mocha subtext0 — icon+title of unlit tabs (~8:1 on BAR_BG)
 BTN_FG = 0x7F849C      # Mocha overlay1 — min/max buttons (5.1:1 on BAR_BG, AA text)
 
 SEP_HARD = "\ue0bc"  # solid slant: angled cut on both sides of the lit tab
@@ -75,9 +76,9 @@ SEP_SOFT = "\ue0bd"  # thin slash between two unlit tabs
 # --- Icons (Nerd Font, codepoints verified against the installed font's
 # cmap -- see dev-* / md-* / seti-* glyph names in nerd-fonts) --------------
 
-ICON_TERMINAL = ""
+ICON_TERMINAL = "\uf120"   # fa-terminal: bare ">_" (the old dev-terminal glyph is boxed and reads as a blob at 1 cell)
 ICON_HOME = ""
-ICON_GIT_REPO = ""
+ICON_GIT_REPO = "\ue702"   # dev-git: outline mark, legible at 1 cell
 ICON_GIT_EXE = ""
 ICON_PYTHON = ""
 ICON_NODE = ""
@@ -173,7 +174,7 @@ _home = os.path.expanduser("~")
 TAB_ICON_TTL = 1.0
 CWD_ICON_TTL = 30.0
 CWD_CACHE_MAX = 256
-_tab_icon_cache: dict[int, tuple[float, str]] = {}
+_tab_icon_cache: dict[tuple[int, str], tuple[float, str]] = {}
 _cwd_icon_cache: dict[str, tuple[float, str]] = {}
 
 # --- Title cleanup -------------------------------------------------------------
@@ -259,15 +260,18 @@ def _icon_for_cwd(cwd: str) -> str:
     return icon
 
 
-def _icon_for_tab(tab_id: int) -> str:
+def _icon_for_tab(tab_id: int, title: str = "") -> str:
+    # Keyed by title too: a `cd` or a new program retitles the tab, and that
+    # must not wait out the TTL behind a stale icon.
     now = monotonic()
-    cached = _tab_icon_cache.get(tab_id)
+    key = (tab_id, title)
+    cached = _tab_icon_cache.get(key)
     if cached is not None and now - cached[0] < TAB_ICON_TTL:
         return cached[1]
     icon = _query_icon_for_tab(tab_id)
     if len(_tab_icon_cache) >= CWD_CACHE_MAX:
         _tab_icon_cache.clear()  # closed tabs' ids never come back
-    _tab_icon_cache[tab_id] = (now, icon)
+    _tab_icon_cache[key] = (now, icon)
     return icon
 
 
@@ -428,18 +432,25 @@ def _sync(os_window_id: int) -> None:
     _frame_t[os_window_id] = _ease_out((monotonic() - fade[0]) / FADE_DURATION) if fade else 1.0
 
 
-def _colors(os_window_id: int, tab_id: int, is_active: bool, accent: int) -> tuple[int, int]:
-    """(fg, bg) for a tab, crossfaded if it's an end of the current switch."""
+def _colors(
+    os_window_id: int, tab_id: int, is_active: bool, accent: int, unlit_fg: int | None = None
+) -> tuple[int, int]:
+    """(fg, bg) for a tab, crossfaded if it's an end of the current switch.
+
+    unlit_fg is the foreground the tab settles on while inactive (defaults to
+    its accent). The index uses the accent, icon+title use INACTIVE_FG: only
+    the number carries color, so a bar of many tabs isn't a wall of rainbow."""
+    off = accent if unlit_fg is None else unlit_fg
     fade = _fade.get(os_window_id)
     if fade is not None:
         t = _frame_t.get(os_window_id, 1.0)
         if t < 1.0:
             _, outgoing, incoming = fade
             if tab_id == incoming:
-                return _lerp(accent, DARK_FG, t), _lerp(DIM_BG, accent, t)
+                return _lerp(off, DARK_FG, t), _lerp(DIM_BG, accent, t)
             if tab_id == outgoing:
-                return _lerp(DARK_FG, accent, t), _lerp(accent, DIM_BG, t)
-    return (DARK_FG, accent) if is_active else (accent, DIM_BG)
+                return _lerp(DARK_FG, off, t), _lerp(accent, DIM_BG, t)
+    return (DARK_FG, accent) if is_active else (off, DIM_BG)
 
 
 def _attention_color(os_window_id: int, tab_id: int) -> int:
@@ -643,7 +654,7 @@ def _plan(draw_data: DrawData, columns: int) -> dict | None:
 
     icons = []
     for t in tabs:
-        icon = _icon_for_tab(t.tab_id)
+        icon = _icon_for_tab(t.tab_id, t.title or "")
         if t.needs_attention and not t.is_active:
             icon = draw_data.tab_activity_symbol or icon
         icons.append(icon)
@@ -775,7 +786,7 @@ def draw_tab(
     if plan is None:
         # Unplanned fallback (see _frame_tabs): one tab at a time, kitty's own
         # per-tab budget, and the right-hand cluster only if it happens to fit.
-        icon = _icon_for_tab(tab.tab_id)
+        icon = _icon_for_tab(tab.tab_id, tab.title or "")
         if tab.needs_attention and not tab.is_active:
             icon = draw_data.tab_activity_symbol or icon
         close_reserve = wcswidth(f"{TAB_CLOSE} ") if tab.is_active else 0
@@ -814,13 +825,21 @@ def draw_tab(
         screen.cursor.fg = as_rgb(accent)
         screen.cursor.bg = as_rgb(bg)
         screen.draw(bar)
+        # Index in the accent, the rest in a neutral tone -- except a tab that
+        # needs attention, which stays fully red so it can't be missed.
+        rest_fg = fg if attention else _colors(
+            os_window_id, tab.tab_id, tab.is_active, accent, INACTIVE_FG
+        )[0]
+        head, _, tail = text.partition(" ")
         screen.cursor.fg = as_rgb(fg)
-        screen.draw(text)
+        screen.draw(head)
+        screen.cursor.fg = as_rgb(rest_fg)
+        screen.draw(" " + tail)
         screen.cursor.bold = False
 
         if draw_close:
             close_start = screen.cursor.x
-            screen.cursor.fg = as_rgb(fg)
+            screen.cursor.fg = as_rgb(rest_fg)
             screen.cursor.bg = as_rgb(bg)
             screen.draw(f"{TAB_CLOSE} ")
             if not extra_data.for_layout:
