@@ -4,40 +4,39 @@
 # Every group has an animation_start, so a group that isn't animating isn't
 # drawn at all: an idle terminal costs zero extra GPU work. Colors are Catppuccin
 # Mocha converted to *linear* RGB (shaders work in linear light, not sRGB).
+# animation_step 8 everywhere: the default is 50ms (20fps), which gave the
+# 110ms spark ~2 frames; 8ms = 120Hz ProMotion, the floor set by repaint_delay.
 
-# 1. Cursor jumps leave an electric arc instead of the flat built-in trail.
+# 1. Short cursor jumps leave a brief spark (hud-spark.slang: kitty's
+#    lightning trail without forks/flicker, and silent on long jumps such as
+#    switching split or tab, where it used to arc across both panes).
 #    Subscribing to cursor-trail-move suppresses kitty's own trail renderer.
-#    Short-lived (110ms) so it reads as a spark, not as a lingering effect.
 startgroup
     animation_start cursor-trail-move
     animation_stop cursor-trail-stop
+    animation_step 8
     var float3 BOLT_COLOR = float3(0.610, 0.672, 0.905)
     var float3 GLOW_COLOR = float3(0.597, 0.381, 0.930)
     var float DURATION = 0.11
     var float JAGGEDNESS = 0.06
     var float GLOW_WIDTH = 4.5
-    shaders cursor-trail-lightning
+    shaders hud-spark
 endgroup
 
-# 2. Changing split: the newly focused pane flashes an inner glow along its
-#    edges, then settles (300ms; it never hides content). INACTIVE_DIM 1
-#    leaves the other panes alone during the flash (inactive_text_alpha
-#    already dims them statically), and the tab bar is kept outside the effect.
+# 2. Changing split: the newly focused pane's edges glow in mauve, then fade
+#    (300ms ease-out). hud-focus.slang adds light instead of multiplying it:
+#    kitty's focus-highlight was invisible on this near-black background.
 startgroup
     animation_start window-focus-in
     animation_stop 300
     animation_curve ease-out
-    animation_step 16
-    var float HIGHLIGHT_INTENSITY = 0.08
-    var float BORDER_WIDTH = 0.012
-    var float BORDER_GLOW = 0.7
-    var float INACTIVE_DIM = 1.0
-    var bool DIM_CENTRAL_AREA_ONLY = true
-    var bool INCLUDE_WINDOW_PADDING = true
-    shaders focus-highlight
+    animation_step 8
+    shaders hud-focus
 endgroup
 
-# 3. Changing tab: content sweeps in from the tab bar edge with a soft front.
+# 3. Changing tab: content sweeps in from the tab bar edge with a soft front
+#    (hud-reveal.slang: kitty's tab-change wipe, minus dimming the tab bar and
+#    minus starting from black -- see the comments there).
 #    Kept at 120ms: the sweep hides part of the new tab until it ends, so at
 #    220ms every tab switch *felt* slow even though nothing was computing. Same
 #    length as tab_bar.py's crossfade so bar and content still move as one.
@@ -45,8 +44,6 @@ startgroup
     animation_start tab-change
     animation_stop 120
     animation_curve ease-out
-    animation_step 16
-    var int ANIMATION_TYPE = 1
-    var float EDGE_SOFTNESS = 0.08
-    shaders tab-change
+    animation_step 8
+    shaders hud-reveal
 endgroup

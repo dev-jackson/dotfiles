@@ -25,6 +25,7 @@ chip that opens kitty's tab picker.
 Enabled via `tab_bar_style custom` in kitty.conf.
 """
 
+import math
 import os
 import re
 import socket
@@ -360,9 +361,20 @@ def _accent(index: int) -> int:
 # inside a cell that was already reserved -- the measured width is identical on
 # every frame of every animation.
 
-FRAME = 1 / 60
-FADE_DURATION = 0.12     # tab switch crossfade, = the tab-change shader
-PULSE_PERIOD = 0.2       # one attention pulse
+# Slow motion for reviewing transitions frame by frame: start a *separate*
+# kitty with KITTY_TAB_SLOWMO=10 in its environment and screenshot it. Unset
+# (the normal case) it is 1 and changes nothing.
+try:
+    SLOWMO = max(1.0, float(os.environ.get("KITTY_TAB_SLOWMO", "1")))
+except ValueError:
+    SLOWMO = 1.0
+
+# 120Hz: the MacBook panel is ProMotion, and at 60 a 120ms fade was only ~7
+# distinct steps. Costs nothing measurable -- the bar is a single text strip
+# and the timer only exists while something animates.
+FRAME = 1 / 120
+FADE_DURATION = 0.12 * SLOWMO     # tab switch crossfade, = the tab-change shader
+PULSE_PERIOD = 0.2 * SLOWMO       # one attention pulse
 PULSE_COUNT = 3
 PULSE_DIM = 0.55         # dimmest point of a pulse, as a fraction of full
 # One extra frame of liveness after an animation's nominal end, so its final
@@ -498,10 +510,54 @@ def _colors(
         if t < 1.0:
             _, outgoing, incoming = fade
             if tab_id == incoming:
-                return _lerp(off, DARK_FG, t), _lerp(DIM_BG, accent, t)
+                bg = _lerp(DIM_BG, accent, t)
+                return _legible_fg(off, DARK_FG, bg), bg
             if tab_id == outgoing:
-                return _lerp(DARK_FG, off, t), _lerp(accent, DIM_BG, t)
+                bg = _lerp(accent, DIM_BG, t)
+                return _legible_fg(off, DARK_FG, bg), bg
     return (DARK_FG, accent) if is_active else (off, DIM_BG)
+
+
+def _luminance(color: int) -> float:
+    def ch(v: int) -> float:
+        c = v / 255
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+    return (0.2126 * ch((color >> 16) & 0xFF) + 0.7152 * ch((color >> 8) & 0xFF)
+            + 0.0722 * ch(color & 0xFF))
+
+
+def _contrast(a: int, b: int) -> float:
+    la, lb = _luminance(a), _luminance(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+def _legible_fg(light: int, dark: int, bg: int) -> int:
+    """Text color for a background that is mid-crossfade.
+
+    Lerping text and background in opposite directions makes them meet: on
+    video the text vanished outright around the middle of every switch. Any
+    blend of the light and dark text colors passes through the background's
+    own luminance too, so there is no smooth path. Instead the text takes
+    whichever endpoint reads better on *this frame's* background: it swaps
+    exactly where both are equally legible (>= 3:1 for every accent here),
+    never showing a frame of zero contrast."""
+    return dark if _contrast(dark, bg) >= _contrast(light, bg) else light
+
+
+def _lit(os_window_id: int, tab_id: int, is_active: bool) -> float:
+    """How "lit" a tab is this frame: 1 = fully the active tab, 0 = settled
+    inactive, in between for the two ends of a switch. Drives everything that
+    can't be a color lerp -- bold, which separator glyph -- so those flip at a
+    chosen point of the fade instead of popping on its first frame."""
+    fade = _fade.get(os_window_id)
+    if fade is not None:
+        t = _frame_t.get(os_window_id, 1.0)
+        if t < 1.0:
+            if tab_id == fade[2]:
+                return t
+            if tab_id == fade[1]:
+                return 1.0 - t
+    return 1.0 if is_active else 0.0
 
 
 def _attention_color(os_window_id: int, tab_id: int) -> int:
@@ -515,10 +571,11 @@ def _attention_color(os_window_id: int, tab_id: int) -> int:
     elapsed = monotonic() - start
     if elapsed >= PULSE_PERIOD * PULSE_COUNT:
         return ATTENTION
-    # Triangle wave starting and ending bright, so the pulse dips rather than
-    # flashes on -- the tab is always at least readable.
+    # Cosine, starting and ending bright, so the pulse dips rather than flashes
+    # on and the tab is always at least readable. (A triangle wave reversed
+    # direction abruptly at the bottom: visible as a "tick" on video.)
     phase = (elapsed % PULSE_PERIOD) / PULSE_PERIOD
-    return _lerp(_scale(ATTENTION, PULSE_DIM), ATTENTION, abs(1.0 - 2.0 * phase))
+    return _lerp(_scale(ATTENTION, PULSE_DIM), ATTENTION, 0.5 + 0.5 * math.cos(2 * math.pi * phase))
 
 
 def _fill_glyph(os_window_id: int, is_active: bool) -> str:
@@ -547,6 +604,9 @@ def _fill_glyph(os_window_id: int, is_active: bool) -> str:
 
 ICON_BRANCH = "\ue725"   # dev-git_branch
 HUD_SEP = "│"
+CLOSE_DIM_FG = 0x6C7086  # Mocha overlay0 -- close glyph on unlit tabs
+# Below this "lit" level a lit/unlit seam is drawn as the faded hairline.
+SEP_SOFT_HANDOFF = 0.1
 HUD_GIT_TTL = 2.0
 HUD_BRANCH_MAX = 18
 HUD_ICON_FG = 0xCBA6F7   # Mocha mauve — branch glyph
@@ -554,6 +614,7 @@ HUD_TEXT_FG = 0xA6ADC8   # Mocha subtext0
 HUD_CLOCK_FG = 0xCDD6F4  # Mocha text
 
 _git_cache: dict[str, tuple[float, str]] = {}
+_hud_settled: dict[int, set[str]] = {}   # os_window_id -> HUD texts last drawn at rest
 _clock_timer: int | None = None
 _seen_tabs: set[int] = set()
 NEW_TAB_SETTLE = 2.0
@@ -851,7 +912,11 @@ def _plan(draw_data: DrawData, columns: int) -> dict | None:
     for i in sorted(range(n), key=lambda i: (abs(i - active), i)):
         if hidden[i]:
             continue
-        extra_close = close_w if tabs[i].is_active else 0
+        # Every titled tab gets its close glyph, not just the active one: the
+        # glyph used to hop to the new tab on a switch, shifting every tab to
+        # its right by two cells on the first frame -- the one jump left in an
+        # otherwise color-only transition. (Clickable on any tab, browser-like.)
+        extra_close = close_w
         room = budget - total() - 1 - extra_close
         if room < TITLE_MIN:
             continue
@@ -860,7 +925,7 @@ def _plan(draw_data: DrawData, columns: int) -> dict | None:
             continue
         texts[i] = _tab_text(i + 1, icons[i], title)
         widths[i] = 1 + wcswidth(texts[i]) + badge_w[i] + extra_close
-        closes[i] = tabs[i].is_active
+        closes[i] = True
 
     visible = [i for i in range(n) if not hidden[i]]
     # Each visible tab needs its *next visible* neighbour, not extra_data's, or
@@ -946,7 +1011,9 @@ def draw_tab(
         # kitty pre-applies active_tab_font_style (default bold-italic) before
         # calling draw_tab; upright reads crisper and keeps the HUD upright too.
         screen.cursor.italic = False
-        screen.cursor.bold = tab.is_active
+        # Bold flips halfway through the fade, where the two tabs' colors
+        # cross, instead of on frame one (a weight jump reads as a glitch).
+        screen.cursor.bold = _lit(os_window_id, tab.tab_id, tab.is_active) >= 0.5
         # Drawn in two pieces only so the accent bar can carry its own
         # foreground; the rest is byte-identical to what the planner measured.
         bar = _fill_glyph(os_window_id, tab.is_active)
@@ -967,13 +1034,16 @@ def draw_tab(
         if badge_text:
             # On the lit tab every badge uses the dark text color: an accent on
             # an accent fill would vanish. 0 means "use the tab's accent".
-            screen.cursor.fg = as_rgb(fg if tab.is_active else (badge_color or accent))
+            # Lerped like the text, so it doesn't snap color on frame one.
+            screen.cursor.fg = as_rgb(fg if attention else _colors(
+                os_window_id, tab.tab_id, tab.is_active, accent, badge_color or accent)[0])
             screen.draw(badge_text)
         screen.cursor.bold = False
 
         if draw_close:
             close_start = screen.cursor.x
-            screen.cursor.fg = as_rgb(rest_fg)
+            screen.cursor.fg = as_rgb(fg if attention else _colors(
+                os_window_id, tab.tab_id, tab.is_active, accent, CLOSE_DIM_FG)[0])
             screen.cursor.bg = as_rgb(bg)
             screen.draw(f"{TAB_CLOSE} ")
             if not extra_data.for_layout:
@@ -988,7 +1058,18 @@ def draw_tab(
             if next_attention and not next_active:
                 next_accent = _attention_color(os_window_id, next_id)
             next_bg = _colors(os_window_id, next_id, next_active, next_accent)[1]
-            if bg != next_bg:
+            lit = max(_lit(os_window_id, tab.tab_id, tab.is_active),
+                      _lit(os_window_id, next_id, next_active))
+            if 0.0 < lit < SEP_SOFT_HANDOFF and not attention and not (next_attention and not next_active):
+                # A lit tab leaving (or arriving) next to an unlit one: near the
+                # unlit end the hard triangle is all but invisible, so hand over
+                # to the hairline here and fade *it*. Previously the hairline
+                # popped in on the very last frame.
+                k = lit / SEP_SOFT_HANDOFF
+                screen.cursor.fg = as_rgb(_lerp(DIM_SEP, _lerp(bg, next_bg, 0.5), k))
+                screen.cursor.bg = as_rgb(_lerp(bg, next_bg, 0.5))
+                screen.draw(SEP_SOFT)
+            elif bg != next_bg:
                 # Hard triangle: only ever touches the active tab, so the seam
                 # always transitions cleanly between the two real segment colors.
                 screen.cursor.fg = as_rgb(bg)
@@ -1043,8 +1124,18 @@ def draw_tab(
                 screen.cursor.fg = screen.cursor.bg = 0
                 screen.draw(" " * pad)
             hud = plan.get("hud", []) if plan is not None else []
+            # The HUD's content belongs to the new tab from frame one (another
+            # branch, or none); fading it in hides the swap.
+            # Only segments that differ from the settled HUD fade: the clock
+            # (and a branch shared by both tabs) stays put instead of blinking.
+            fading = _fade.get(os_window_id) is not None and _frame_t.get(os_window_id, 1.0) < 1.0
+            hud_t = _frame_t.get(os_window_id, 1.0) if fading else 1.0
+            settled = _hud_settled.get(os_window_id, set())
+            if not fading:
+                _hud_settled[os_window_id] = {text for text, _ in hud}
             for text, color in hud:
-                screen.cursor.fg = as_rgb(color)
+                fade_in = fading and text not in settled
+                screen.cursor.fg = as_rgb(_lerp(BAR_BG, color, hud_t) if fade_in else color)
                 screen.cursor.bg = as_rgb(BAR_BG)
                 screen.draw(text)
             if hud:
