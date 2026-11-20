@@ -253,11 +253,12 @@ WINDOW_BUTTONS = (
 
 
 def _reset_regions(os_window_id: int) -> None:
-    _click_regions[os_window_id] = {"win": [], "tab": []}
+    _click_regions[os_window_id] = {"win": [], "tab": [], "empty": []}
 
 
 def _register(os_window_id: int, kind: str, start: int, end: int, payload: object) -> None:
-    _click_regions.setdefault(os_window_id, {"win": [], "tab": []})[kind].append((start, end, payload))
+    _click_regions.setdefault(os_window_id, {"win": [], "tab": [], "empty": []})[kind].append(
+        (start, end, payload))
 
 
 def _icon_for_cwd(cwd: str) -> str:
@@ -1120,6 +1121,7 @@ def draw_tab(
             # Guaranteed >= 0 by the planner; clamped anyway so an unplanned
             # fallback frame can't wrap the bar onto itself.
             pad = max(0, screen.columns - screen.cursor.x - right_w)
+            empty_start = screen.cursor.x
             if pad:
                 screen.cursor.fg = screen.cursor.bg = 0
                 screen.draw(" " * pad)
@@ -1140,6 +1142,12 @@ def draw_tab(
                 screen.draw(text)
             if hud:
                 _schedule_clock()
+            # The empty stretch (and the HUD, which isn't a button) behaves like
+            # a macOS title bar: double-click zooms the window. Without this
+            # region kitty attributed it to the *last tab*, whose cell range we
+            # pad out to here -- a click activated that tab and a double-click
+            # opened "rename tab".
+            _register(os_window_id, "empty", empty_start, screen.cursor.x, None)
             if draw_new:
                 # Pinned beside the window cluster rather than trailing the last
                 # tab, so it stays at the same pixel as tabs come and go.
@@ -1194,7 +1202,16 @@ def _hit_test(tab_manager: TabManager, x: float, y: float) -> tuple[str, object]
     for start, end, tab_id in regions["tab"]:
         if start <= col < end:
             return ("tab", tab_id)
+    for start, end, _ in regions.get("empty", ()):
+        if start <= col < end:
+            return ("empty", None)
     return None
+
+
+# macOS's default double-click interval (NSEvent.doubleClickInterval is 0.5s
+# unless changed in Accessibility settings).
+DOUBLE_CLICK = 0.5
+_last_empty_release: dict[int, float] = {}
 
 
 def _handle_tab_bar_mouse_with_buttons(
@@ -1206,7 +1223,14 @@ def _handle_tab_bar_mouse_with_buttons(
             if action == GLFW_RELEASE:
                 kind, payload = hit
                 boss = get_boss()
-                if kind == "win":
+                if kind == "empty":
+                    now = monotonic()
+                    last = _last_empty_release.pop(self.os_window_id, 0.0)
+                    if now - last <= DOUBLE_CLICK:
+                        boss.toggle_maximized(self.os_window_id)
+                    else:
+                        _last_empty_release[self.os_window_id] = now
+                elif kind == "win":
                     if payload == "toggle_maximized":
                         boss.toggle_maximized(self.os_window_id)
                     else:
