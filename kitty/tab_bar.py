@@ -1182,7 +1182,30 @@ def draw_tab(
 from kitty.fast_data_types import GLFW_MOUSE_BUTTON_LEFT, GLFW_PRESS, GLFW_RELEASE  # noqa: E402
 from kitty.tabs import TabManager  # noqa: E402
 
-_original_handle_tab_bar_mouse = TabManager.handle_tab_bar_mouse
+# Guard against this file being executed more than once in one kitty process:
+# a plain `original = TabManager.handle_tab_bar_mouse` would then capture the
+# previous execution's patch, and every stale layer would keep its own frozen
+# click regions and swallow clicks on them. The true original is stashed on
+# the class once (or recovered by walking back through older patches).
+# Measured on kitty 0.49.1: a config reload does NOT re-run this file -- edits
+# here only take effect in a newly started kitty.
+def _true_original_tab_bar_mouse():
+    stashed = getattr(TabManager, "_dotfiles_original_tab_bar_mouse", None)
+    if stashed is not None:
+        return stashed
+    # A kitty that already reloaded older versions of this file holds a chain
+    # of them; each one's module globals point at the handler it wrapped.
+    f = TabManager.handle_tab_bar_mouse
+    while getattr(f, "__name__", "") == "_handle_tab_bar_mouse_with_buttons":
+        f = f.__globals__.get("_original_handle_tab_bar_mouse", f)
+        if getattr(f, "__name__", "") == "_handle_tab_bar_mouse_with_buttons" and \
+                f is f.__globals__.get("_original_handle_tab_bar_mouse"):
+            break
+    TabManager._dotfiles_original_tab_bar_mouse = f
+    return f
+
+
+_original_handle_tab_bar_mouse = _true_original_tab_bar_mouse()
 
 
 def _hit_test(tab_manager: TabManager, x: float, y: float) -> tuple[str, object] | None:
