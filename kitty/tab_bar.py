@@ -618,10 +618,16 @@ _git_cache: dict[str, tuple[float, str]] = {}
 _hud_settled: dict[int, set[str]] = {}   # os_window_id -> HUD texts last drawn at rest
 _clock_timer: int | None = None
 _seen_tabs: set[int] = set()
-NEW_TAB_SETTLE = 2.0
+# Repaints after a tab first appears, while its shell starts and reports its
+# cwd (OSC 7). One at 2s left a new tab showing the wrong icon/branch for two
+# seconds; zsh here reports within ~0.3s, the later one covers slow starts.
+NEW_TAB_SETTLE = (0.4, 1.5)
 
 
 def _repaint_all(timer_id: int) -> None:
+    # The point of these repaints is fresh data: a cached icon from the tab's
+    # first frame (shell not started yet) would otherwise survive the TTL.
+    _tab_icon_cache.clear()
     boss = get_boss()
     if boss is not None:
         for os_window_id in list(boss.os_window_map):
@@ -674,6 +680,9 @@ def _hud_segments(tab_id: int) -> list[tuple[str, int]]:
         segs += [(f" {ICON_BRANCH} ", HUD_ICON_FG), (f"{_truncate_middle(branch, HUD_BRANCH_MAX)} ", HUD_TEXT_FG),
                  (HUD_SEP, DIM_SEP)]
     segs.append((f" {time.strftime('%H:%M')} ", HUD_CLOCK_FG))
+    # Status ends here; window controls start. Without this the clock ran
+    # straight into "+", and the HUD read as one more button.
+    segs.append((HUD_SEP, DIM_SEP))
     return segs
 
 
@@ -842,7 +851,8 @@ def _plan(draw_data: DrawData, columns: int) -> dict | None:
     fresh = [t.tab_id for t in tabs if t.tab_id not in _seen_tabs]
     if fresh:
         _seen_tabs.update(fresh)
-        add_timer(_repaint_all, NEW_TAB_SETTLE, False)
+        for delay in NEW_TAB_SETTLE:
+            add_timer(_repaint_all, delay, False)
     badges = [_badge(t, boss) for t in tabs]
     badge_w = [wcswidth(b[0]) for b in badges]
     compact = [1 + wcswidth(_tab_text(i + 1, icons[i], "")) + badge_w[i] for i in range(n)]
