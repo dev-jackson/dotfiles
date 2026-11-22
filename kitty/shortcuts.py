@@ -179,6 +179,7 @@ LABELS = {
     "set_background_opacity -0.1": "opacidad −",
     "set_background_opacity 1": "opacidad 100%",
     "set_background_opacity default": "opacidad por defecto",
+    "kitten themes --config-file-name themes.conf --reload-in=all": "elegir tema (vista previa)",
     # Selección / portapapeles
     "copy_to_clipboard": "copiar",
     "copy_or_noop": "copiar (si hay selección)",
@@ -228,7 +229,7 @@ GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("SCROLL Y SCROLLBACK", ("scroll_", "show_scrollback", "show_last_command_output",
                              "copy_last_command_output", "search_scrollback", "clear_terminal")),
     ("LAYOUT Y APARIENCIA", ("next_layout", "goto_layout", "toggle_layout", "layout_action", "change_font_size",
-                             "set_background_opacity")),
+                             "set_background_opacity", "kitten themes")),
     ("SELECCIÓN", ("copy_to", "copy_or", "paste_", "pass_selection_to_program")),
 )
 OTHER_GROUP = "OTROS"

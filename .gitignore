@@ -39,3 +39,7 @@ luac.out
 *.x86_64
 *.hex
 
+
+# kitty: estado del selector de temas (⌃⌘T), propio de cada máquina
+kitty/themes.conf
+kitty/current-theme.conf

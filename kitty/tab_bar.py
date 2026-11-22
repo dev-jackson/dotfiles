@@ -36,6 +36,7 @@ from kitty.fast_data_types import (
     Screen,
     add_timer,
     current_focused_os_window_id,
+    get_options,
     get_boss,
     mark_tab_bar_dirty,
     monotonic,
@@ -43,6 +44,7 @@ from kitty.fast_data_types import (
     wakeup_main_loop,
     wcswidth,
 )
+from kitty.constants import config_dir
 from kitty.tab_bar import DrawData, ExtraData, TabBarData, as_rgb
 
 # --- Colors (Catppuccin Mocha) ---------------------------------------------
@@ -247,9 +249,9 @@ _click_regions: dict[int, dict[str, list]] = {}
 # no confirmation and there's no hover to warn otherwise. min/max use BTN_FG:
 # quiet, but still AA-legible (DIM_SEP, used before, was ~1.4:1 -- invisible).
 WINDOW_BUTTONS = (
-    (BTN_MIN, "minimize_macos_window", BTN_FG),
-    (BTN_MAX, "toggle_maximized", BTN_FG),
-    (BTN_CLOSE, "close_os_window", ATTENTION),
+    (BTN_MIN, "minimize_macos_window", "BTN_FG"),
+    (BTN_MAX, "toggle_maximized", "BTN_FG"),
+    (BTN_CLOSE, "close_os_window", "ATTENTION"),
 )
 
 
@@ -969,6 +971,79 @@ def _plan(draw_data: DrawData, columns: int) -> dict | None:
     }
 
 
+# --- Theme -----------------------------------------------------------------
+#
+# Every color constant in this file is the Catppuccin Mocha Ajustado value.
+# With another theme picked (kitten themes -> current-theme.conf), they are
+# re-derived from kitty's live options instead, so the bar follows the theme
+# instead of staying Mocha. Derivation ratios are the ones Mocha's
+# hand-picked values sit at (e.g. INACTIVE_FG is foreground 22% toward the
+# bar). Accents come from the theme's "## tab_palette:" line, else from its
+# ANSI colors. A config reload (which `kitten themes` triggers) swaps the
+# options object, so checking its identity plus the theme file's mtime is
+# enough to notice a switch; the stat is ~10us per frame.
+
+_MOCHA = {k: globals()[k] for k in (
+    "PALETTE", "DARK_FG", "DIM_BG", "BAR_BG", "DIM_SEP", "ATTENTION", "NEW_FG",
+    "INACTIVE_FG", "BTN_FG", "CLOSE_DIM_FG", "HUD_ICON_FG", "HUD_TEXT_FG",
+    "HUD_CLOCK_FG", "PROGRESS_FG", "ZOOM_FG")}
+_theme_key: tuple | None = None
+
+
+def _theme_file_meta(path: str) -> tuple[str, list[int] | None]:
+    name, palette = "", None
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("## name:"):
+                    name = line.split(":", 1)[1].strip()
+                elif line.startswith(("# tab_palette:", "## tab_palette:")):
+                    palette = [int(t.lstrip("#"), 16) for t in line.split(":", 1)[1].split()] or None
+    except (OSError, ValueError):
+        pass
+    return name, palette
+
+
+def _sync_theme() -> None:
+    global _theme_key
+    try:
+        opts = get_options()
+    except Exception:
+        return
+    current = os.path.join(config_dir, "current-theme.conf")
+    try:
+        mtime = os.stat(current).st_mtime
+    except OSError:
+        mtime = None
+    key = (id(opts), mtime)
+    if key == _theme_key:
+        return
+    _theme_key = key
+    name, palette = _theme_file_meta(current) if mtime is not None else ("", None)
+    g = globals()
+    if mtime is None or name == "Catppuccin Mocha Ajustado":
+        g.update(_MOCHA)        # the default: keep the hand-picked values exactly
+        return
+
+    def col(attr: str, fallback: int) -> int:
+        c = getattr(opts, attr, None)
+        return fallback if c is None else (c.red << 16) | (c.green << 8) | c.blue
+
+    bg = col("background", _MOCHA["DARK_FG"])
+    fg = col("foreground", _MOCHA["HUD_CLOCK_FG"])
+    bar = col("tab_bar_background", _lerp(bg, 0, 0.35))
+    ansi = [col(f"color{i}", _MOCHA["PALETTE"][i % 8]) for i in range(16)]
+    g.update(
+        PALETTE=palette or [ansi[i] for i in (4, 5, 6, 3, 2, 13, 14, 1)],
+        DARK_FG=bg, DIM_BG=bar, BAR_BG=bar,
+        DIM_SEP=_lerp(fg, bar, 0.75), ATTENTION=ansi[1],
+        NEW_FG=_lerp(fg, bar, 0.22), INACTIVE_FG=_lerp(fg, bar, 0.22),
+        BTN_FG=_lerp(fg, bar, 0.45), CLOSE_DIM_FG=_lerp(fg, bar, 0.55),
+        HUD_ICON_FG=ansi[5], HUD_TEXT_FG=_lerp(fg, bar, 0.22), HUD_CLOCK_FG=fg,
+        PROGRESS_FG=ansi[6], ZOOM_FG=ansi[3],
+    )
+
+
 # --- Unfocused window -------------------------------------------------------
 #
 # A macOS window that isn't key dims its title bar; kitty's bar didn't, so two
@@ -1018,6 +1093,8 @@ def draw_tab(
 ) -> int:
     os_window_id = draw_data.os_window_id
     global _cur_mute
+    if index == 1:
+        _sync_theme()
     _cur_mute = _focus_mute(os_window_id)
     if index == 1:
         if not extra_data.for_layout:
@@ -1213,7 +1290,7 @@ def draw_tab(
                 _register(os_window_id, "win", new_start, screen.cursor.x, "new_tab")
             for glyph, action, color in buttons:
                 start = screen.cursor.x
-                screen.cursor.fg = _rgb(color)
+                screen.cursor.fg = _rgb(globals()[color])  # by name: follows the theme
                 screen.cursor.bg = _rgb(BAR_BG)
                 screen.draw(f" {glyph} ")
                 _register(os_window_id, "win", start, screen.cursor.x, action)
